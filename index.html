@@ -192,13 +192,21 @@
 </div>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="data.js"></script>
 <script>
 
 // === VARIABLES GLOBALES ===
-var AT_TOKEN='patk5VfGResJjf2NO.eae4078626a2194a6a820ffc50cccc00b71edf93888eac46a16a6ee5f1a9be53';
-var AT_BASE='appnnHyteoGbJ9mUr';
-var AT_TABLE='Proyectos';
+// Backend: Supabase (reemplaza a Airtable). La anon key es PÚBLICA por diseño;
+// los datos están protegidos por RLS (Row Level Security) en la base de datos.
+var SUPABASE_URL='https://vuwuatfkvekadaosrptb.supabase.co';
+var SUPABASE_ANON_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ1d3VhdGZrdmVrYWRhb3NycHRiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4MzI3MzMsImV4cCI6MjA5ODQwODczM30.k6ElDeIMsFpj6GtCsiJyQffwPktN-nrsnn1kHxRjuVw';
+var sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Adaptador: envuelve filas de Supabase en la forma de Airtable {id, fields}
+// para que el resto del código (que lee r.id y r.fields.Campo) no cambie.
+function atAdapt(rows){ return (rows||[]).map(function(row){ return {id: row.id, fields: row}; }); }
+function atAdaptOne(row){ return row ? {id: row.id, fields: row} : null; }
 var VENDEDOR_KEY='kia_ppm_vendedor';
 var CELULAR_KEY='kia_ppm_celular';
 var CORREO_KEY='kia_ppm_correo';
@@ -206,10 +214,10 @@ var COT_NUM_KEY='kia_ppm_cotnum';
 var currentVendedor='',currentCelular='',currentCorreo='';
 async function getNextCotNum(){
   try{
-    var url='https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE)+'?fields[]=Num_Cotizacion&sort[0][field]=Num_Cotizacion&sort[0][direction]=desc&pageSize=1';
-    var r=await fetch(url,{headers:{Authorization:'Bearer '+AT_TOKEN}});
-    var d=await r.json();
-    var last=(d.records&&d.records[0]&&d.records[0].fields.Num_Cotizacion)?parseInt(d.records[0].fields.Num_Cotizacion):3999999;
+    var resp=await sb.from('proyectos').select('Num_Cotizacion').order('Num_Cotizacion',{ascending:false}).limit(1);
+    if(resp.error) throw resp.error;
+    var rows=resp.data||[];
+    var last=(rows[0]&&rows[0].Num_Cotizacion)?parseInt(rows[0].Num_Cotizacion):3999999;
     return String(last+1);
   }catch(e){
     var n=parseInt(localStorage.getItem(COT_NUM_KEY)||'3999999');var nx=n+1;localStorage.setItem(COT_NUM_KEY,nx.toString());return String(nx);
@@ -318,56 +326,24 @@ function switchTab(t){
 
 // === AUTENTICACIÓN Y SESIÓN ===
 function checkLogin() {
-  var n = localStorage.getItem(VENDEDOR_KEY);
-  var cor = localStorage.getItem(CORREO_KEY);
-
-  if (n && cor) {
-    // Verificar contra Airtable que la sesión sigue siendo válida (el hash guardado debe coincidir)
-    var password = localStorage.getItem('PASSWORD_KEY') || '';
-    var filter = encodeURIComponent("AND({Email}='" + sanitizeFilter(cor.trim()) + "',{Password}='" + password + "')");
-
-    fetch('https://api.airtable.com/v0/' + AT_BASE + '/Vendedores?filterByFormula=' + filter, {
-      headers: { Authorization: 'Bearer ' + AT_TOKEN }
-    })
-      .then(function(r) { return r.json(); })
-      .then(function(d) {
-        if (d.records && d.records.length > 0) {
-          // Sesión válida, continuar normalmente
-          currentVendedor = n.trim();
-          currentCelular = localStorage.getItem(CELULAR_KEY) || '';
-          currentCorreo = cor.trim();
-          showApp();
-        } else {
-          // Contraseña cambió u otro motivo → expulsar
-          forceLogout('Tu sesión ha expirado. Por favor ingresa de nuevo.');
-        }
-      })
-      .catch(function() {
-        // Sin conexión → permitir entrar (modo offline, igual que antes)
-        currentVendedor = n.trim();
-        currentCelular = localStorage.getItem(CELULAR_KEY) || '';
-        currentCorreo = cor.trim();
-        showApp();
-      });
-
-  } else {
+  // El cliente de Supabase persiste la sesión solo; basta con consultarla.
+  sb.auth.getSession().then(function(res) {
+    var session = (res && res.data) ? res.data.session : null;
+    if (session && session.user) {
+      var u = session.user;
+      var md = u.user_metadata || {};
+      currentVendedor = md.nombre || u.email;
+      currentCelular = md.celular || '';
+      currentCorreo = u.email;
+      showApp();
+    } else {
+      gel('login-screen').style.display = 'flex';
+      gel('app-screen').style.display = 'none';
+    }
+  }).catch(function() {
     gel('login-screen').style.display = 'flex';
     gel('app-screen').style.display = 'none';
-  }
-}
-
-// ── Seguridad: hash SHA-256 de contraseña (Web Crypto API) ──────────────────
-async function hashPassword(plain) {
-  var enc = new TextEncoder().encode(plain);
-  var buf = await crypto.subtle.digest('SHA-256', enc);
-  return Array.from(new Uint8Array(buf))
-    .map(function(b) { return b.toString(16).padStart(2, '0'); })
-    .join('');
-}
-
-// Escapa comillas simples para evitar inyección en filtros de Airtable
-function sanitizeFilter(val) {
-  return String(val || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+  });
 }
 
 async function doLogin() {
@@ -377,69 +353,58 @@ async function doLogin() {
   if (!password) { showToast('Ingresa tu contraseña', true); return; }
   var btn = gel('btn-entrar');
   btn.disabled = true; btn.textContent = 'Verificando...';
-
-  var passwordHash = await hashPassword(password);
+  function resetBtn(){ btn.disabled = false; btn.textContent = 'Ingresar a la calculadora'; }
 
   try {
-    // 1️⃣ Intentar con hash (usuarios ya migrados)
-    var r1 = await fetch(
-      'https://api.airtable.com/v0/' + AT_BASE + '/Vendedores?filterByFormula=' +
-      encodeURIComponent("AND({Email}='" + sanitizeFilter(correo) + "',{Password}='" + passwordHash + "')"),
-      { headers: { Authorization: 'Bearer ' + AT_TOKEN } }
-    );
-    var d1 = await r1.json();
-
-    if (d1.records && d1.records.length > 0) {
-      // Usuario ya tiene hash → login normal
-      var f = d1.records[0].fields;
-      localStorage.setItem(VENDEDOR_KEY, f.Nombre || correo);
-      localStorage.setItem(CELULAR_KEY, f.Celular || '');
-      localStorage.setItem(CORREO_KEY, correo);
-      localStorage.setItem('PASSWORD_KEY', passwordHash);
-      currentVendedor = f.Nombre || correo; currentCelular = f.Celular || ''; currentCorreo = correo;
+    // 1️⃣ Intentar login nativo de Supabase (vendedores ya migrados)
+    var login = await sb.auth.signInWithPassword({ email: correo, password: password });
+    if (!login.error && login.data && login.data.user) {
+      var u = login.data.user;
+      var md = u.user_metadata || {};
+      currentVendedor = md.nombre || correo;
+      currentCelular = md.celular || '';
+      currentCorreo = u.email;
       showApp();
       return;
     }
 
-    // 2️⃣ Intentar con texto plano (usuarios no migrados aún)
-    var r2 = await fetch(
-      'https://api.airtable.com/v0/' + AT_BASE + '/Vendedores?filterByFormula=' +
-      encodeURIComponent("AND({Email}='" + sanitizeFilter(correo) + "',{Password}='" + sanitizeFilter(password) + "')"),
-      { headers: { Authorization: 'Bearer ' + AT_TOKEN } }
-    );
-    var d2 = await r2.json();
+    // 2️⃣ Aún no tiene cuenta nativa → verificar su clave heredada (de Airtable)
+    //     mediante función protegida en la base; el hash NUNCA sale del servidor.
+    var ver = await sb.rpc('verificar_legacy', { p_email: correo, p_password: password });
+    var row = (ver.data && ver.data[0]) ? ver.data[0] : null;
 
-    if (d2.records && d2.records.length > 0) {
-      var rec = d2.records[0];
-      var f2 = rec.fields;
-      // Migración silenciosa: actualizar contraseña a hash en Airtable (sin aviso al usuario)
-      fetch('https://api.airtable.com/v0/' + AT_BASE + '/Vendedores/' + rec.id, {
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer ' + AT_TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fields: { Password: passwordHash } })
-      }).catch(function() {}); // Si falla, el próximo login lo reintentará
-      localStorage.setItem(VENDEDOR_KEY, f2.Nombre || correo);
-      localStorage.setItem(CELULAR_KEY, f2.Celular || '');
-      localStorage.setItem(CORREO_KEY, correo);
-      localStorage.setItem('PASSWORD_KEY', passwordHash); // Desde aquí ya se guarda el hash
-      currentVendedor = f2.Nombre || correo; currentCelular = f2.Celular || ''; currentCorreo = correo;
+    if (!ver.error && row && row.ok) {
+      // Clave correcta → crear su cuenta nativa automáticamente con esa misma clave
+      var nombre = row.nombre || correo;
+      var celular = row.celular || '';
+      var signup = await sb.auth.signUp({
+        email: correo,
+        password: password,
+        options: { data: { nombre: nombre, celular: celular } }
+      });
+      if (signup.error) { showToast('Error creando acceso: ' + signup.error.message, true); resetBtn(); return; }
+
+      // Iniciar sesión ya con la cuenta nativa recién creada
+      var login2 = await sb.auth.signInWithPassword({ email: correo, password: password });
+      if (login2.error) {
+        showToast('Cuenta creada. Si no entra, revisa que "Confirm email" esté desactivado en Supabase.', true);
+        resetBtn(); return;
+      }
+      currentVendedor = nombre; currentCelular = celular; currentCorreo = correo;
       showApp();
     } else {
       showToast('Correo o contraseña incorrectos', true);
-      btn.disabled = false; btn.textContent = 'Ingresar a la calculadora';
+      resetBtn();
     }
   } catch(e) {
     showToast('Error de conexión: ' + e.message, true);
-    btn.disabled = false; btn.textContent = 'Ingresar a la calculadora';
+    resetBtn();
   }
 }
 
-// Nueva función reutilizable para cerrar sesión forzado
+// Cerrar sesión forzado
 function forceLogout(mensaje) {
-  localStorage.removeItem(VENDEDOR_KEY);
-  localStorage.removeItem(CELULAR_KEY);
-  localStorage.removeItem(CORREO_KEY);
-  localStorage.removeItem('PASSWORD_KEY');
+  sb.auth.signOut();
   currentVendedor = ''; currentCelular = ''; currentCorreo = '';
   gel('login-screen').style.display = 'flex';
   gel('app-screen').style.display = 'none';
@@ -453,7 +418,7 @@ function showApp(){
   populateFS();populateUL();populateDS();
 }
 function cambiarUsuario(){
-  [VENDEDOR_KEY,CELULAR_KEY,CORREO_KEY].forEach(function(k){localStorage.removeItem(k);});
+  sb.auth.signOut();
   currentVendedor='';currentCelular='';currentCorreo='';
   ['input-vendedor','input-celular','input-correo'].forEach(function(id){if(gel(id))gel(id).value='';});
   gel('login-screen').style.display='flex';if(gel('input-correo'))gel('input-correo').value='';if(gel('input-password'))gel('input-password').value='';gel('app-screen').style.display='none';
@@ -473,54 +438,25 @@ async function saveCot(data){
       Fecha_Cotizacion:new Date().toISOString().split('T')[0],
       Estado:'Pendiente'
     };
-    // Try adding Num_Cotizacion separately - field may need recreation in Airtable
     if(data.cot_num) fields['Num_Cotizacion']=Number(data.cot_num);
-    var payload={fields:fields};
-    var atUrl='https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE);var r=await fetch(atUrl,{
-      method:'POST',
-      headers:{Authorization:'Bearer '+AT_TOKEN,'Content-Type':'application/json'},
-      body:JSON.stringify(payload)
-    });
-    var result=await r.json();
-    if(result.error){
-      console.error('Airtable error:',JSON.stringify(result.error));
-      // If Num_Cotizacion field unknown, retry without it
-      if(result.error.type==='UNKNOWN_FIELD_NAME'){
-        delete payload.fields['Num_Cotizacion'];
-        var r2=await fetch('https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE),{
-          method:'POST',
-          headers:{Authorization:'Bearer '+AT_TOKEN,'Content-Type':'application/json'},
-          body:JSON.stringify(payload)
-        });
-        var res2=await r2.json();
-        if(res2.error){showToast('Error: '+res2.error.message,true);return false;}
-        showToast('Guardado. Revisa el nombre exacto de la columna en Airtable.');
-        return r2.ok;
-      }
-      showToast('Error Airtable: '+result.error.message,true);return false;
-    }
-    return r.ok;
+    var resp=await sb.from('proyectos').insert(fields);
+    if(resp.error){showToast('Error al guardar: '+resp.error.message,true);return false;}
+    return true;
   }catch(e){showToast('Error: '+e.message,true);return false;}
 }
 async function updEstado(recordId,estado,reloadFn){
   try{
-    var r=await fetch('https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE)+'/'+recordId,{
-      method:'PATCH',headers:{Authorization:'Bearer '+AT_TOKEN,'Content-Type':'application/json'},
-      body:JSON.stringify({fields:{Estado:estado}})
-    });
-    if(r.ok){showToast('Estado: '+estado);if(reloadFn)setTimeout(reloadFn,800);}
+    var resp=await sb.from('proyectos').update({Estado:estado}).eq('id',recordId);
+    if(!resp.error){showToast('Estado: '+estado);if(reloadFn)setTimeout(reloadFn,800);}
     else showToast('Error al actualizar',true);
   }catch(e){showToast('Error: '+e.message,true);}
 }
 async function loadMis(){
   gel('mis-tbody').innerHTML='<tr><td colspan="9" class="loading">Cargando...</td></tr>';
   try{
-    var filter=encodeURIComponent("{Vendedor}='"+sanitizeFilter(currentVendedor)+"'");
-    var url='https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE)+'?sort[0][field]=Fecha_Cotizacion&sort[0][direction]=desc&pageSize=100&filterByFormula='+filter;
-    var r=await fetch(url,{headers:{Authorization:'Bearer '+AT_TOKEN}});
-    var d=await r.json();
-    if(d.error){showToast('Error: '+d.error.message,true);return;}
-    var rows=d.records||[];
+    var resp=await sb.from('proyectos').select('*').eq('Vendedor',currentVendedor).order('Fecha_Cotizacion',{ascending:false}).limit(100);
+    if(resp.error){showToast('Error: '+resp.error.message,true);return;}
+    var rows=atAdapt(resp.data);
     gel('mis-stat-total').textContent=rows.length;
     gel('mis-stat-pend').textContent=rows.filter(function(r){return r.fields.Estado==='Pendiente';}).length;
     gel('mis-stat-acep').textContent=rows.filter(function(r){return r.fields.Estado==='Aceptada';}).length;
@@ -540,9 +476,10 @@ function filterMisTable(){
 }
 
 function reprCotMis(recordId){
-  fetch('https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE)+'/'+recordId,{headers:{Authorization:'Bearer '+AT_TOKEN}}).then(function(r){return r.json();}).then(function(rec){
-    var f=rec.fields;
-    if(!f){showToast('No se pudo cargar la cotizacion',true);return;}
+  sb.from('proyectos').select('*').eq('id',recordId).single().then(function(resp){
+    var rec=atAdaptOne(resp.data);
+    var f=rec?rec.fields:null;
+    if(resp.error||!f){showToast('No se pudo cargar la cotizacion',true);return;}
     var modelo=f.Modelo||'';
     var plan=f.Plan||'';
     var cfg=f.Configuracion||'';
@@ -735,7 +672,7 @@ function attachSave(modelo,modeloAuto,cfg,p20label,ppm20,reg20,p30label,ppm30,re
     var ok=await saveCot({cliente:cliente,id_cliente:idcli,modelo:modelo,config:cfg,plan:planLabel,ppm:ppm,regular:regular,cot_num:cotNum});
     if(ok){
       showToast('Cotización '+cotNum+' generada');btn.textContent='Generado';
-      var svcsToUse=isUL?svcsUL:(planVal==='20k'?svcs20:svcs30);var kmData=isUL?kmUL:(planVal==='20k'?km20:km30);console.log('kmData:',kmData,'km20:',km20,'km30:',km30,'kmUL:',kmUL);
+      var svcsToUse=isUL?svcsUL:(planVal==='20k'?svcs20:svcs30);var kmData=isUL?kmUL:(planVal==='20k'?km20:km30);
       var vigToUse=isUL?(vigUL||'Unlimited'):(planVal==='20k'?'2 años':'3 años');
       printCotizacion(modeloAuto,planLabel,ppm,regular,30,vigToUse,svcsToUse,cfg,cotNum,cliente,freq,rangoUL,kmData);
     }else{btn.disabled=false;btn.textContent='Generar e Imprimir Cotización';}
@@ -1081,13 +1018,9 @@ var _allContratos = [];
 async function loadContrato() {
   gel('contrato-tbody').innerHTML = '<tr><td colspan="9" class="loading">Cargando...</td></tr>';
   try {
-    var filter = encodeURIComponent("AND({Estado}='Aceptada',{Vendedor}='" + sanitizeFilter(currentVendedor) + "')");
-    var url = 'https://api.airtable.com/v0/' + AT_BASE + '/' + encodeURIComponent(AT_TABLE) +
-      '?sort[0][field]=Fecha_Cotizacion&sort[0][direction]=desc&pageSize=100&filterByFormula=' + filter;
-    var r = await fetch(url, { headers: { Authorization: 'Bearer ' + AT_TOKEN } });
-    var d = await r.json();
-    if (d.error) { showToast('Error: ' + d.error.message, true); return; }
-    _allContratos = d.records || [];
+    var resp = await sb.from('proyectos').select('*').eq('Estado','Aceptada').eq('Vendedor',currentVendedor).order('Fecha_Cotizacion',{ascending:false}).limit(100);
+    if (resp.error) { showToast('Error: ' + resp.error.message, true); return; }
+    _allContratos = atAdapt(resp.data);
     gel('contrato-stat-total').textContent = _allContratos.length;
     renderContratoTable(_allContratos);
   } catch (e) { showToast('Error: ' + e.message, true); }
@@ -1151,12 +1084,8 @@ function generarContrato(recordId) {
   var container = gel('contrato-render');
   container.innerHTML = html;
 
-  // Registrar fecha de generación del contrato en Airtable
-  fetch('https://api.airtable.com/v0/'+AT_BASE+'/'+encodeURIComponent(AT_TABLE)+'/'+recordId, {
-    method: 'PATCH',
-    headers: { Authorization: 'Bearer '+AT_TOKEN, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ fields: { Fecha_Contrato: new Date().toISOString() } })
-  }).catch(function(){});
+  // Registrar fecha de generación del contrato en Supabase
+  sb.from('proyectos').update({ Fecha_Contrato: new Date().toISOString() }).eq('id', recordId).then(function(){}, function(){});
 
   showToast('Abriendo vista previa para imprimir...');
 
