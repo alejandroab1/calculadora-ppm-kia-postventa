@@ -1066,7 +1066,7 @@ function generarContrato(recordId) {
   if (!dni) { showToast('Ingresa el DNI o RUC del cliente', true); if (dniInput) dniInput.focus(); return; }
   if (!vin) { showToast('Ingresa el VIN del vehículo', true); if (vinInput) vinInput.focus(); return; }
 
-  var rec = _allContratos.find(function(r) { return r.id === recordId; });
+  var rec = _allContratos.find(function(r) { return String(r.id) === String(recordId); });
   if (!rec) { showToast('No se encontró la cotización', true); return; }
 
   var f = rec.fields;
