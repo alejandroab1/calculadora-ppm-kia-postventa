@@ -4,7 +4,7 @@
 
 | Archivo | Qué contiene | ¿Cuándo tocarlo? |
 |---|---|---|
-| `index.html` | Estructura de pantallas (botones, tabs, formularios) + lógica de cálculos y guardado en Airtable | Solo si cambia algo visual o de comportamiento |
+| `index.html` | Estructura de pantallas (botones, tabs, formularios) + lógica de cálculos y guardado en Supabase | Solo si cambia algo visual o de comportamiento |
 | `styles.css` | Todos los estilos: colores, tipografía, tarjetas de planes, tablas | Solo si cambia el diseño |
 | `contracts.js` | Generación de contratos PDF: textos, tablas de servicios, formato de impresión | Solo si cambia la estructura del contrato/PDF |
 | `data.js` | Precios, modelos y cascadas de selección — codificados en base64 | **Nunca editar a mano.** Solo modificar con `update_prices.py` o `manage_models.py` |
